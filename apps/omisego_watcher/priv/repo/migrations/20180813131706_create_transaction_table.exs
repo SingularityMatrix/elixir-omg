@@ -12,6 +12,6 @@ defmodule OmiseGOWatcher.Repo.Migrations.CreateTransactionTable do
     end
 
     # TODO: this will work as long as there will be not nulls here
-    create unique_index(:transactions, [:blknum, :txindex])
+    create unique_index(:transactions, [:blknum, :txindex], name: :unq_transaction_blknum_txindex)
   end
 end
