@@ -20,11 +20,12 @@ defmodule OMG.API.State do
   """
   alias OMG.API.Block
   alias OMG.API.BlockQueue
+  alias OMG.API.EventerAPI
   alias OMG.API.FreshBlocks
   alias OMG.API.State.Core
   alias OMG.API.State.Transaction
   alias OMG.DB
-  alias OMG.Watcher.Eventer
+  alias OMG.Eth
 
   use OMG.API.LoggerExt
 
@@ -41,17 +42,16 @@ defmodule OMG.API.State do
     GenServer.call(__MODULE__, {:exec, tx, input_fees})
   end
 
-  def form_block(child_block_interval) do
-    GenServer.cast(__MODULE__, {:form_block, child_block_interval})
+  def form_block do
+    GenServer.cast(__MODULE__, :form_block)
   end
 
-  def close_block(child_block_interval, eth_height) do
-    GenServer.call(__MODULE__, {:close_block, child_block_interval, eth_height})
+  def close_block(eth_height) do
+    GenServer.call(__MODULE__, {:close_block, eth_height})
   end
 
   @spec deposit(deposits :: [Core.deposit()]) :: :ok
-  def deposit(deposits_enc) do
-    deposits = Enum.map(deposits_enc, &Core.decode_deposit/1)
+  def deposit(deposits) do
     GenServer.call(__MODULE__, {:deposits, deposits})
   end
 
@@ -63,8 +63,8 @@ defmodule OMG.API.State do
     GenServer.call(__MODULE__, {:exit_not_spent_utxo, utxo})
   end
 
-  @spec utxo_exists(%{blknum: number, txindex: number, oindex: number}) :: :utxo_exists | :utxo_does_not_exist
-  def utxo_exists(utxo) do
+  @spec utxo_exists?(Core.exit_t()) :: boolean()
+  def utxo_exists?(utxo) do
     GenServer.call(__MODULE__, {:utxo_exists, utxo})
   end
 
@@ -82,20 +82,31 @@ defmodule OMG.API.State do
   """
   def init(:ok) do
     {:ok, height_query_result} = DB.child_top_block_number()
-    {:ok, last_deposit_query_result} = DB.last_deposit_height()
+    {:ok, last_deposit_query_result} = DB.last_deposit_child_blknum()
     {:ok, utxos_query_result} = DB.utxos()
+    {:ok, child_block_interval} = Eth.RootChain.get_child_block_interval()
 
-    _ =
-      Logger.info(fn ->
-        "Started State, height '#{height_query_result}', deposit height '#{last_deposit_query_result}'"
-      end)
+    with {:ok, _data} = result <-
+           Core.extract_initial_state(
+             utxos_query_result,
+             height_query_result,
+             last_deposit_query_result,
+             child_block_interval
+           ) do
+      _ =
+        Logger.info(fn ->
+          "Started State, height: #{height_query_result}, deposit height: #{last_deposit_query_result}"
+        end)
 
-    Core.extract_initial_state(
-      utxos_query_result,
-      height_query_result,
-      last_deposit_query_result,
-      BlockQueue.child_block_interval()
-    )
+      result
+    else
+      {:error, reason} = error when reason in [:top_block_number_not_found, :last_deposit_not_found] ->
+        _ = Logger.error(fn -> "It seems that Child chain database is not initialized. Check README.md" end)
+        error
+
+      other ->
+        other
+    end
   end
 
   @doc """
@@ -115,11 +126,13 @@ defmodule OMG.API.State do
   Includes a deposit done on the root chain contract (see above - not sure about this)
   """
   def handle_call({:deposits, deposits}, _from, state) do
-    # TODO event_triggers is ignored because Eventer is moving to Watcher - tidy this
-    {:ok, {_event_triggers, db_updates}, new_state} = Core.deposit(deposits, state)
+    {:ok, {event_triggers, db_updates}, new_state} = Core.deposit(deposits, state)
 
     # GenServer.call
     :ok = DB.multi_update(db_updates)
+
+    EventerAPI.emit_events(event_triggers)
+
     {:reply, :ok, new_state}
   end
 
@@ -134,10 +147,10 @@ defmodule OMG.API.State do
   Exits (spends) utxos on child chain, explicitly signals if utxo has already been spent
   """
   def handle_call({:exit_not_spent_utxo, utxo}, _from, state) do
-    with :utxo_exists <- Core.utxo_exists(utxo, state) do
+    if Core.utxo_exists?(utxo, state) do
       do_exit_utxos([utxo], state)
     else
-      :utxo_does_not_exist -> {:reply, :utxo_does_not_exist, state}
+      {:reply, :utxo_does_not_exist, state}
     end
   end
 
@@ -145,7 +158,7 @@ defmodule OMG.API.State do
   Tells if utxo exists
   """
   def handle_call({:utxo_exists, utxo}, _from, state) do
-    {:reply, Core.utxo_exists(utxo, state), state}
+    {:reply, Core.utxo_exists?(utxo, state), state}
   end
 
   @doc """
@@ -156,59 +169,57 @@ defmodule OMG.API.State do
   end
 
   @doc """
-  Wraps up accumulated transactions submissions into a block, triggers db update and emits events to Eventer.
+  Works exactly like handle_cast(:form_block) but is synchronous
 
-  eth_height given is the Ethereum chain height where the block being closed got submitted, to be used with events.
+  Also, eth_height given is the Ethereum chain height where the block being closed got submitted, to be used with events.
+
+  Someday, one might want to skip some of computations done (like calculating the root hash, which is scrapped)
   """
-  def handle_call({:close_block, child_block_interval, eth_height}, _from, state) do
-    {duration, {:ok, {%Block{}, event_triggers, db_updates}, new_state}} =
-      :timer.tc(fn -> Core.form_block(child_block_interval, state) end)
-
+  def handle_call({:close_block, eth_height}, _from, state) do
+    {duration, {result, new_state}} = :timer.tc(fn -> do_form_block(state, eth_height) end)
     _ = Logger.debug(fn -> "Closing block done in #{inspect(round(duration / 1000))} ms" end)
-
-    :ok = DB.multi_update(db_updates)
-
-    event_triggers =
-      event_triggers
-      |> Enum.map(fn event_trigger ->
-        event_trigger
-        |> Map.put(:submited_at_ethheight, eth_height)
-      end)
-
-    Eventer.emit_events(event_triggers)
-
-    {:reply, :ok, new_state}
+    {:reply, result, new_state}
   end
 
   @doc """
-  Wraps up accumulated transactions into a block, triggers db update,
-  publishes block and enqueues for submission
+  Wraps up accumulated transactions submissions into a block, triggers db update and:
+   - emits events to Eventer (if it is running, i.e. in Watcher).
+   - pushes the new block into the respective service (if it is running, i.e. in Child Chain server)
+   - enqueues the new block for submission to BlockQueue (if it is running, i.e. in Child Chain server)
   """
-  def handle_cast({:form_block, child_block_interval}, state) do
+  def handle_cast(:form_block, state) do
     _ = Logger.debug(fn -> "Forming new block..." end)
-    {duration, result} = :timer.tc(fn -> do_form_block(child_block_interval, state) end)
+    {duration, {_result, new_state}} = :timer.tc(fn -> do_form_block(state) end)
     _ = Logger.info(fn -> "Forming block done in #{inspect(round(duration / 1000))} ms" end)
-    result
+    {:noreply, new_state}
   end
 
-  defp do_form_block(child_block_interval, state) do
-    {core_form_block_duration, core_form_block_result} =
-      :timer.tc(fn -> Core.form_block(child_block_interval, state) end)
+  defp do_form_block(state, eth_height \\ nil) do
+    {:ok, child_block_interval} = Eth.RootChain.get_child_block_interval()
 
-    {:ok, {block, _event_triggers, db_updates}, new_state} = core_form_block_result
+    {core_form_block_duration, {:ok, {%Block{number: blknum} = block, event_triggers, db_updates}, new_state}} =
+      :timer.tc(fn -> Core.form_block(child_block_interval, state) end)
 
     _ =
       Logger.info(fn ->
-        "Calculations for forming block number #{inspect(block.number)} done in #{
+        "Calculations for forming block number #{inspect(blknum)} done in #{
           inspect(round(core_form_block_duration / 1000))
         } ms"
       end)
 
     :ok = DB.multi_update(db_updates)
-    :ok = FreshBlocks.push(block)
-    :ok = BlockQueue.enqueue_block(block.hash, block.number)
 
-    {:noreply, new_state}
+    ### casts, note these are no-ops if given processes are turned off
+    FreshBlocks.push(block)
+    BlockQueue.enqueue_block(block.hash, block.number)
+    # enrich the event triggers with the ethereum height supplied
+    event_triggers
+    |> Enum.map(&Map.put(&1, :submited_at_ethheight, eth_height))
+    |> EventerAPI.emit_events()
+
+    ###
+
+    {:ok, new_state}
   end
 
   defp do_exit_utxos(utxos, state) do

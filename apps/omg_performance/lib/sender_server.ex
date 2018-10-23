@@ -34,7 +34,7 @@ defmodule OMG.Performance.SenderServer do
 
   defmodule LastTx do
     @moduledoc """
-    Submodule defines structure to keep last transaction sent by sender remembered fo the next submission.
+    Keeps last transaction sent by sender, remembered for next submission.
     """
     defstruct [:blknum, :txindex, :oindex, :amount]
     @type t :: %__MODULE__{blknum: integer, txindex: integer, oindex: integer, amount: integer}
@@ -194,7 +194,7 @@ defmodule OMG.Performance.SenderServer do
     end
   end
 
-  # Submits Tx to the childchain server via http (JsonRPC) and translates successful result to atom-keyed map.
+  # Submits Tx to the child chain server via http (JsonRPC) and translates successful result to atom-keyed map.
   @spec submit_tx_jsonrpc(binary) :: {:ok, map} | {:error, any}
   defp submit_tx_jsonrpc(encoded_tx) do
     OMG.JSONRPC.Client.call(:submit, %{transaction: encoded_tx})

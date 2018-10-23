@@ -21,8 +21,12 @@ defmodule OMG.Watcher.Challenger do
   require Utxo
   alias OMG.Watcher.Challenger.Challenge
   alias OMG.Watcher.Challenger.Core
-  alias OMG.Watcher.TransactionDB
+  alias OMG.Watcher.DB
 
+  @doc """
+  Challenges exit.
+  Stub. Does nothing.
+  """
   def challenge(_utxo_exit) do
     :challenged
   end
@@ -30,15 +34,13 @@ defmodule OMG.Watcher.Challenger do
   @doc """
   Returns challenge for an exit
   """
-  @spec create_challenge(pos_integer(), non_neg_integer(), non_neg_integer()) :: Challenge.t() | :exit_valid
-  def create_challenge(blknum, txindex, oindex) do
-    utxo_exit = Utxo.position(blknum, txindex, oindex)
-
-    with {:ok, challenging_tx} <- TransactionDB.get_transaction_challenging_utxo(utxo_exit) do
-      txs_in_challenging_block = TransactionDB.find_by_txblknum(challenging_tx.txblknum)
-      Core.create_challenge(challenging_tx, txs_in_challenging_block, utxo_exit)
+  @spec create_challenge(Utxo.Position.t()) :: Challenge.t() | {:error, :invalid_challenge_of_exit}
+  def create_challenge(utxo_exit) do
+    with {:ok, challenging_tx} <- DB.Transaction.get_transaction_challenging_utxo(utxo_exit) do
+      txs_in_challenging_block = DB.Transaction.get_by_blknum(challenging_tx.blknum)
+      {:ok, Core.create_challenge(challenging_tx, txs_in_challenging_block)}
     else
-      :utxo_not_spent -> :exit_valid
+      {:error, :utxo_not_spent} -> {:error, :invalid_challenge_of_exit}
     end
   end
 end

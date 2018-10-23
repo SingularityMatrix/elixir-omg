@@ -16,20 +16,33 @@ defmodule OMG.Performance do
   @moduledoc """
   OMG network child chain server performance test entrypoint. Setup and runs performance tests.
 
-  # Examples
+  # Usage
+
+  Always `cd apps/omg_performance` before running performance tests
 
   ## start_simple_perftest runs test with 5 transactions for each 3 senders and default options.
-    > mix run --no-start -e 'OMG.Performance.start_simple_perftest(5, 3)'
-  }
+    ```> mix run -e 'OMG.Performance.start_simple_perftest(5, 3)'```
 
   ## start_extended_perftest runs test with 100 transactions for one specified account and default options.
-    > mix run --no-start -e 'OMG.Performance.start_extended_perftest(100, [%{ addr: <<192, 206, 18, ...>>, priv: <<246, 22, 164, ...>>}], "0xbc5f ...")'
+  ## extended test is run on testnet make sure you followed instruction in `README.md` and both `geth` and `omg_api` are running
+    ```> mix run -e 'OMG.Performance.start_extended_perftest(100, [%{ addr: <<192, 206, 18, ...>>, priv: <<246, 22, 164, ...>>}], "0xbc5f ...")'```
+  ## Parameters passed are:  1. number of transaction each sender will send, 2. list of senders (see: TestHelper.generate_entity()) and 3. `contract` address
 
+  # Note:
+
+  `:fprof` will print a warning:
+  ```
+  Warning: {erlang, trace, 3} called in "<0.514.0>" - trace may become corrupt!
+  ```
+  It is caused by using `procs: :all` in options. So far we're not using `:erlang.trace/3` in our code,
+  so it has been ignored. Otherwise it's easy to reproduce and report if anyone has the nerve
+  (github.com/erlang/otp and the JIRA it points you to).
   """
 
   use OMG.API.LoggerExt
 
   alias OMG.API.Crypto
+  alias OMG.API.Integration.DepositHelper
   alias OMG.API.TestHelper
   alias OMG.API.Utxo
 
@@ -43,11 +56,13 @@ defmodule OMG.Performance do
   start_simple_perf runs test with {ntx_to_send} tx for each {nspenders} senders with given options.
 
   Default options:
+  ```
   %{
     destdir: ".", # directory where the results will be put
     profile: false,
     block_every_ms: 2000 # how often do you want the tester to force a block being formed
   }
+  ```
   """
   @spec start_simple_perftest(pos_integer(), pos_integer(), map()) :: :ok
   def start_simple_perftest(ntx_to_send, nspenders, opts \\ %{}) do
@@ -70,15 +85,17 @@ defmodule OMG.Performance do
   end
 
   @doc """
-  start_extended_perf runs test with {ntx_to_send} tx for each {spenders}.
+  Runs test with {ntx_to_send} transactions for each {spenders}.
   Initial deposits for each account will be made on passed {contract_addr}.
 
   Default options:
+  ```
   %{
     destdir: ".", # directory where the results will be put
     geth: "http://localhost:8545",
     child_chain: "http://localhost:9656"
   }
+  ```
   """
   @spec start_extended_perftest(
           pos_integer(),
@@ -101,8 +118,6 @@ defmodule OMG.Performance do
 
     utxos = create_utxos_for_extended_perftest(spenders, ntx_to_send)
 
-    Process.sleep(20_000)
-
     run({ntx_to_send, utxos, opts, false})
 
     cleanup_extended_perftest(started_apps)
@@ -117,7 +132,7 @@ defmodule OMG.Performance do
 
     :ok = OMG.DB.init()
 
-    started_apps = ensure_all_started([:omg_db, :jsonrpc2, :cowboy, :hackney])
+    started_apps = ensure_all_started([:omg_db, :cowboy, :hackney])
 
     omg_port = Application.get_env(:omg_jsonrpc, :omg_api_rpc_port)
 
@@ -147,9 +162,8 @@ defmodule OMG.Performance do
     Application.put_env(:ethereumex, :http_options, recv_timeout: :infinity)
     Application.put_env(:ethereumex, :url, opts[:geth])
 
-    Application.put_env(:omg_eth, :contract_addr, contract_addr)
-
-    Application.put_env(:omg_eth, :omg_jsonrpc, opts[:child_chain])
+    {:ok, contract_addr_enc} = Crypto.encode_address(contract_addr)
+    Application.put_env(:omg_eth, :contract_addr, contract_addr_enc)
 
     {:ok, started_apps}
   end
@@ -199,8 +213,7 @@ defmodule OMG.Performance do
     spenders
     |> Enum.with_index(1)
     |> Enum.map(fn {spender, index} ->
-      {:ok, spender_enc} = Crypto.encode_address(spender.addr)
-      :ok = OMG.API.State.deposit([%{owner: spender_enc, currency: @eth, amount: ntx_to_send, blknum: index}])
+      :ok = OMG.API.State.deposit([%{owner: spender.addr, currency: @eth, amount: ntx_to_send, blknum: index}])
 
       utxo_pos = Utxo.position(index, 0, 0) |> Utxo.Position.encode()
       %{owner: spender, utxo_pos: utxo_pos, amount: ntx_to_send}
@@ -209,11 +222,22 @@ defmodule OMG.Performance do
 
   @spec create_utxos_for_extended_perftest(list(TestHelper.entity()), pos_integer()) :: list()
   defp create_utxos_for_extended_perftest(spenders, ntx_to_send) do
-    #    TODO utxo_pos should be calculated inside make_deposits function.
-    OMG.Eth.DevHelpers.make_deposits(10 * ntx_to_send, spenders)
+    make_deposits(10 * ntx_to_send, spenders)
     |> Enum.map(fn {:ok, owner, blknum, amount} ->
       utxo_pos = Utxo.position(blknum, 0, 0) |> Utxo.Position.encode()
       %{owner: owner, utxo_pos: utxo_pos, amount: amount}
     end)
+  end
+
+  defp make_deposits(value, accounts) do
+    deposit = fn account ->
+      deposit_blknum = DepositHelper.deposit_to_child_chain(account.addr, value)
+
+      {:ok, account, deposit_blknum, value}
+    end
+
+    accounts
+    |> Enum.map(&Task.async(fn -> deposit.(&1) end))
+    |> Enum.map(fn task -> Task.await(task, :infinity) end)
   end
 end

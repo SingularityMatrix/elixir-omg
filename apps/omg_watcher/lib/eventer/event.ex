@@ -19,7 +19,8 @@ defmodule OMG.Watcher.Eventer.Event do
   @type t ::
           OMG.Watcher.Eventer.Event.AddressReceived.t()
           | OMG.Watcher.Eventer.Event.InvalidBlock.t()
-          | OMG.Watcher.Eventer.Event.BlockWithHolding.t()
+          | OMG.Watcher.Eventer.Event.BlockWithholding.t()
+          | OMG.Watcher.Eventer.Event.InvalidExit.t()
 
   defmodule AddressReceived do
     @moduledoc """
@@ -71,7 +72,7 @@ defmodule OMG.Watcher.Eventer.Event do
           }
   end
 
-  defmodule BlockWithHolding do
+  defmodule BlockWithholding do
     @moduledoc """
     Notifies about block-withholding
     """
@@ -81,7 +82,24 @@ defmodule OMG.Watcher.Eventer.Event do
     defstruct [:blknum]
 
     @type t :: %__MODULE__{
-            blknum: pos_integer
+            blknum: pos_integer()
+          }
+  end
+
+  defmodule InvalidExit do
+    @moduledoc """
+    Notifies about invalid exit
+    """
+
+    def name, do: "invalid_exit"
+
+    defstruct [:amount, :currency, :owner, :utxo_pos]
+
+    @type t :: %__MODULE__{
+            amount: pos_integer(),
+            currency: binary(),
+            owner: binary(),
+            utxo_pos: pos_integer()
           }
   end
 end

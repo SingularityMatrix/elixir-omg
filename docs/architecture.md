@@ -37,7 +37,7 @@ For responsibilities of the processes/modules look into respective docs in `.ex`
 
 - reverts to reading `OMG.DB` for old blocks
 
-### `OMG.RootChainCoordinator`
+### `OMG.API.RootChainCoordinator`
 
 - reads Ethereum block height from `OMG.Eth`
 - synchronizes view of Ethereum block height of all enrolled processes (see other processes descriptions)
@@ -46,6 +46,7 @@ For responsibilities of the processes/modules look into respective docs in `.ex`
 
 Actually `OMG.API.EthereumEventListener` setup with `:exiter`.
 
+- used only in child chain
 - pushes exits to `OMG.API.State` on child chain server's side
 - tracks exits via `OMG.API.RootChainCoordinator`
 
@@ -72,13 +73,21 @@ Actually `OMG.API.EthereumEventListener` setup with `:depositor`.
 - pushes statefully valid blocks and transactions (acknowledged by `OMG.API.State` above) to `WatcherDB`
 - emits block, transaction, consensus events to `OMG.Watcher.Eventer`
 
-### `OMG.Watcher.ExitValidator` (fast)
+### :fast_validator
 
-TODO - possible requires sorting out of this vs `:exiter`
+Actually `OMG.API.EthereumEventListener` setup with `:fast_validator`.
 
-### `OMG.Watcher.ExitValidator` (slow)
+- used only in Watcher
+- validates exits and pushes them to `WatcherDB`
+- emits byzantine events to `OMG.Watcher.Eventer`
 
-TODO
+### :slow_validator
+
+Actually `OMG.API.EthereumEventListener` setup with `:slow_validator`.
+
+- used only in Watcher
+- validates exits and spends them to `OMG.API.State`
+- emits byzantine events to `OMG.Watcher.Eventer`
 
 ### `Phoenix app` (not a module - section name TODO)
 
@@ -91,7 +100,7 @@ TODO
 
 ### `OMG.JSONRPC`
 
-- exposes `OMG.API` via a `cowboy`-driven JSON-RPC2 interface
+- exposes `OMG.API` (as configured by `:omg_jsonrpc, :api_module` setting) via a `cowboy`-driven JSON-RPC2 interface
 
 ### `OMG.Performance`
 

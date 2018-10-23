@@ -14,7 +14,7 @@
 
 defmodule OMG.Performance.SenderManager do
   @moduledoc """
-  Registry-kind module to manage sender processes, helps to create and start senders and waits when all are done.
+  Registry-kind module that creates and starts sender processes and waits until all are done
   """
 
   use GenServer
@@ -42,7 +42,7 @@ defmodule OMG.Performance.SenderManager do
   end
 
   @doc """
-  Starts sender processes and reschedule check whether they are done.
+  Starts sender processes
   """
   @spec init({pos_integer(), list(), binary}) :: {:ok, map()}
   def init({ntx_to_send, utxos, destdir}) do
@@ -86,7 +86,7 @@ defmodule OMG.Performance.SenderManager do
   Any unexpected child reportind :EXIT should result in a crash
   """
   def handle_info({:EXIT, from_pid, _reason}, %{senders: [{_last_seqnum, from_pid} = last_sender]} = state) do
-    _ = Logger.info(fn -> "[SM]: Senders are all done, last sender: #{inspect(last_sender)}. Stopping manager" end)
+    _ = Logger.info(fn -> "Senders are all done, last sender: #{inspect(last_sender)}. Stopping manager" end)
     write_stats(state)
     {:stop, :normal, state}
   end
@@ -98,14 +98,14 @@ defmodule OMG.Performance.SenderManager do
 
       {_done_seqnum, done_pid} = done_sender ->
         remaining_senders = Enum.filter(senders, fn {_seqnum, pid} -> pid != done_pid end)
-        _ = Logger.info(fn -> "[SM]: Sender #{inspect(done_sender)} done. Manager continues..." end)
+        _ = Logger.info(fn -> "Sender #{inspect(done_sender)} done. Manager continues..." end)
         {:noreply, %{state | senders: remaining_senders}}
     end
   end
 
   def handle_info({:EXIT, _from, reason}, state) do
     write_stats(state)
-    _ = Logger.info(fn -> "[SM] +++ Manager Exiting (reason: #{inspect(reason)})... +++" end)
+    _ = Logger.info(fn -> " +++ Manager Exiting (reason: #{inspect(reason)})... +++" end)
     {:stop, reason, state}
   end
 
@@ -118,7 +118,7 @@ defmodule OMG.Performance.SenderManager do
   end
 
   @doc """
-  Register block forming time received from the BlockCreator process.
+  Register block forming time received from the `OMG.Performance.BlockCreator` process.
   """
   @spec handle_cast({:blkform, blknum :: integer, total_ms :: pos_integer()}, state :: map()) :: {:noreply, map()}
   def handle_cast({:blkform, blknum, total_ms}, state) do

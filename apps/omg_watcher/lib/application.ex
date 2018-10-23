@@ -13,10 +13,7 @@
 # limitations under the License.
 
 defmodule OMG.Watcher.Application do
-  @moduledoc """
-  See https://hexdocs.pm/elixir/Application.html
-  for more information on OTP Applications
-  """
+  @moduledoc false
   use Application
   use OMG.API.LoggerExt
 
@@ -24,42 +21,55 @@ defmodule OMG.Watcher.Application do
     import Supervisor.Spec
 
     # Define workers and child supervisors to be supervised
-    slow_exit_validator_block_margin = Application.get_env(:omg_api, :slow_exit_validator_block_margin)
-
-    event_listener_config = %{
-      block_finality_margin: Application.get_env(:omg_api, :ethereum_event_block_finality_margin),
-      max_blocks_in_fetch: Application.get_env(:omg_api, :ethereum_event_max_block_range_in_deposits_query),
-      get_events_interval: Application.get_env(:omg_api, :ethereum_event_get_deposits_interval_ms)
-    }
+    block_finality_margin = Application.get_env(:omg_api, :ethereum_event_block_finality_margin)
+    margin_slow_validator = Application.get_env(:omg_watcher, :margin_slow_validator)
 
     children = [
       # Start the Ecto repository
-      supervisor(OMG.Watcher.Repo, []),
+      supervisor(OMG.Watcher.DB.Repo, []),
       # Start workers
       {OMG.API.State, []},
       {OMG.Watcher.Eventer, []},
+      {OMG.API.RootChainCoordinator, MapSet.new([:depositer, :fast_validator, :slow_validator, :block_getter])},
       worker(
         OMG.API.EthereumEventListener,
-        [event_listener_config, &OMG.Eth.get_deposits/2, &OMG.API.State.deposit/1],
-        id: :depositor
+        [
+          %{
+            synced_height_update_key: :last_depositer_eth_height,
+            service_name: :depositer,
+            block_finality_margin: block_finality_margin,
+            get_events_callback: &OMG.Eth.RootChain.get_deposits/2,
+            process_events_callback: &deposit_events_callback/1,
+            get_last_synced_height_callback: &OMG.DB.last_depositer_eth_height/0
+          }
+        ],
+        id: :depositer
       ),
       worker(
         OMG.API.EthereumEventListener,
-        [event_listener_config, &OMG.Eth.get_exits/2, &OMG.API.State.exit_utxos/1],
-        id: :exiter
-      ),
-      worker(
-        OMG.Watcher.ExitValidator,
-        [&OMG.DB.last_fast_exit_block_height/0, fn _ -> :ok end, 0, :last_fast_exit_block_height],
+        [
+          %{
+            block_finality_margin: 0,
+            synced_height_update_key: :last_fast_exit_eth_height,
+            service_name: :fast_validator,
+            get_events_callback: &OMG.Eth.RootChain.get_exits/2,
+            process_events_callback: OMG.Watcher.ExitValidator.Validator.challenge_fastly_invalid_exits(),
+            get_last_synced_height_callback: &OMG.DB.last_fast_exit_eth_height/0
+          }
+        ],
         id: :fast_validator
       ),
       worker(
-        OMG.Watcher.ExitValidator,
+        OMG.API.EthereumEventListener,
         [
-          &OMG.DB.last_slow_exit_block_height/0,
-          &slow_validator_utxo_exists_callback(&1),
-          slow_exit_validator_block_margin,
-          :last_slow_exit_block_height
+          %{
+            block_finality_margin: margin_slow_validator,
+            synced_height_update_key: :last_slow_exit_eth_height,
+            service_name: :slow_validator,
+            get_events_callback: &OMG.Eth.RootChain.get_exits/2,
+            process_events_callback: OMG.Watcher.ExitValidator.Validator.challenge_slowly_invalid_exits(),
+            get_last_synced_height_callback: &OMG.DB.last_slow_exit_eth_height/0
+          }
         ],
         id: :slow_validator
       ),
@@ -89,13 +99,9 @@ defmodule OMG.Watcher.Application do
     :ok
   end
 
-  defp slow_validator_utxo_exists_callback(utxo_exit) do
-    with :ok <- OMG.API.State.exit_if_not_spent(utxo_exit) do
-      :ok
-    else
-      :utxo_does_not_exist ->
-        :ok = OMG.Watcher.ChainExiter.exit()
-        :child_chain_exit
-    end
+  defp deposit_events_callback(deposits) do
+    :ok = OMG.API.State.deposit(deposits)
+    _ = OMG.Watcher.DB.EthEvent.insert_deposits(deposits)
+    :ok
   end
 end

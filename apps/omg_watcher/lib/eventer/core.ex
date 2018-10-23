@@ -24,8 +24,8 @@ defmodule OMG.Watcher.Eventer.Core do
   @transfer_topic "transfer"
   @byzantine_topic "byzantine"
 
-  @spec prepare_events(any() | Event.t()) :: list({String.t(), String.t(), Event.t()})
-  def prepare_events(event_triggers) do
+  @spec pair_events_with_topics(any() | Event.t()) :: list({String.t(), String.t(), Event.t()})
+  def pair_events_with_topics(event_triggers) do
     Enum.flat_map(event_triggers, &get_event_with_topic(&1))
   end
 
@@ -33,11 +33,18 @@ defmodule OMG.Watcher.Eventer.Core do
     [{@byzantine_topic, Event.InvalidBlock.name(), event}]
   end
 
-  defp get_event_with_topic(%Event.BlockWithHolding{} = event) do
-    [{@byzantine_topic, Event.BlockWithHolding.name(), event}]
+  defp get_event_with_topic(%Event.BlockWithholding{} = event) do
+    [{@byzantine_topic, Event.BlockWithholding.name(), event}]
   end
 
-  defp get_event_with_topic(event_trigger) do
+  defp get_event_with_topic(%Event.InvalidExit{} = event) do
+    [{@byzantine_topic, Event.InvalidExit.name(), event}]
+  end
+
+  # NOTE: the deposit events are silenced because of the desired behavior not being defined yet, pending OMG-177
+  defp get_event_with_topic(%{deposit: _deposit}), do: []
+
+  defp get_event_with_topic(%{tx: _tx} = event_trigger) do
     get_address_received_events(event_trigger) ++ get_address_spent_events(event_trigger)
   end
 

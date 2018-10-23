@@ -14,7 +14,7 @@
 
 defmodule OMG.Performance.BlockCreator do
   @moduledoc """
-  Module simulates forming new block on childchain at specified time intervals
+  Module simulates forming new block on the child chain at specified time intervals
   """
 
   use GenServer
@@ -47,7 +47,7 @@ defmodule OMG.Performance.BlockCreator do
   def handle_info(:do, {blknum, block_every_ms}) do
     child_block_interval = 1000
 
-    OMG.API.State.form_block(child_block_interval)
+    OMG.API.State.form_block()
     OMG.Performance.SenderManager.block_forming_time(blknum, 0)
 
     reschedule_task(block_every_ms)

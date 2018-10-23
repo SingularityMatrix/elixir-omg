@@ -2,6 +2,8 @@
 
 The `elixir-omg` repository contains OmiseGO's Elixir implementation of Plasma and forms the basis for the OMG Network.
 
+[![Build Status](https://jenkins.omisego.io/buildStatus/icon?job=omisego/elixir-omg/develop)](https://jenkins.omisego.io/blue/organizations/jenkins/omisego%2Felixir-omg/activity?branch=develop) [![Coverage Status](https://coveralls.io/repos/github/omisego/elixir-omg/badge.svg?branch=develop)](https://coveralls.io/github/omisego/elixir-omg?branch=develop) [![Gitter chat](https://badges.gitter.im/omisego/elixir-omg.png)](https://gitter.im/omisego/elixir-omg)
+
 **IMPORTANT NOTICE: Heavily WIP, expect anything**
 
 **Table of Contents**
@@ -54,7 +56,7 @@ The `elixir-omg` repository contains OmiseGO's Elixir implementation of Plasma a
 <!-- Created by [gh-md-toc](https://github.com/ekalinin/github-markdown-toc) -->
 <!-- .gh-md-toc --insert README.md -->
 
-The first release of the OMG Network is based upon **Tesuji Plasma**, an iterative design step over [Plasma MVP](github.com/omisego/plasma-mvp). The diagram below illustrates the relationship between the wallet provider and how wallet providers connect to **Tesuji Plasma**.
+The first release of the OMG Network is based upon **Tesuji Plasma**, an iterative design step over [Plasma MVP](https://github.com/omisego/plasma-mvp). The diagram below illustrates the relationship between the wallet provider and how wallet providers connect to **Tesuji Plasma**.
 
 ![eWallet server and OMG Network](docs/assets/OMG-network-eWallet.jpg)
 
@@ -84,7 +86,7 @@ A high level flow of the setup for both is outlined below.
 The configuration keys can be looked up at [`apps/omg_eth/config/config.exs`](apps/omg_eth/config/config.exs).
 Such configuration must become part of the [Mix configuration](https://hexdocs.pm/mix/Mix.Config.html) for the app you're going to be running.
 1. Initialize the child chain server's `OMG.DB` database.
-1. At this point the child chain server should be properly setup to run by starting the `omg_jsonrpc` Mix app
+1. At this point the child chain server should be properly setup to run by starting the `omg_api` Mix app
 1. (**Watcher only**) Configure PostgreSQL for `WatcherDB` database
 1. (**Watcher only**) Acquire the configuration file with root chain deployment data
 1. (**Watcher only**, optional) If running on the same machine as the child chain server, customize the location of `OMG.DB` database folder
@@ -102,16 +104,16 @@ A developer instance of `geth` runs Ethereum locally and prefunds an account.
 However, when `geth` terminates, the state of the Ethereum network is lost.
 
 ```
-geth --dev --dev.period 1 --rpc --rpcapi personal,web3,eth
+geth --dev --dev.period 1 --rpc --rpcapi personal,web3,eth,net  --rpcaddr 0.0.0.0
 ```
 
 ##### Persistent developer `geth` instance
 Alternatively, a persistent developer instance that does not lose state can be started with the following command:
 ```
-geth --dev --dev.period 1 --rpc --rpcapi personal,web3,eth --datadir ~/.geth
+geth --dev --dev.period 1 --rpc --rpcapi personal,web3,eth,net  --rpcaddr 0.0.0.0 --datadir ~/.geth
 ```
 
-#### Configure the `omg_eth` app
+#### Prepare and configure the root chain contract
 
 The following step will:
 - create, fund and unlock the authority address
@@ -119,13 +121,15 @@ The following step will:
 - create the config file
 
 Note that `geth` needs to already be running for this step to work!
+
+From the root dir of `elixir-omg`:
 ```
-mix compile && mix run --no-start -e \
+mix compile
+mix run --no-start -e \
  '
-   OMG.Eth.DevHelpers.prepare_env!
-   |> OMG.Eth.DevHelpers.create_conf_file
-   |> IO.puts
- ' > ~/config.exs
+   contents = OMG.Eth.DevHelpers.prepare_env!() |> OMG.Eth.DevHelpers.create_conf_file()
+   "~/config.exs" |> Path.expand() |> File.write!(contents)
+ '
 ```
 
 The result should look something like this (use `cat ~/config.exs` to check):
@@ -163,7 +167,7 @@ You need to re-initialize the database, in case you want to start a new child ch
 * Start Up the child chain server:
 
 ```
-cd apps/omg_jsonrpc
+cd apps/omg_api
 iex -S mix run --config ~/config.exs
 ```
 
@@ -201,15 +205,15 @@ config :omg_db,
 
 ```
 rm -rf ~/.omg/data_watcher
-mix do ecto.drop, ecto.create, ecto.migrate, run --no-start -e 'OMG.DB.init()' --config ~/config_watcher.exs
+cd apps/omg_watcher
+mix do ecto.reset --no-start, run --no-start -e 'OMG.DB.init()' --config ~/config_watcher.exs
 ```
 
 #### Start the Watcher
 
-To start syncing to the Child chain server:
+To start syncing to the Child chain server (continue from the `apps/omg_watcher` directory):
 
 ```
-cd apps/omg_watcher
 iex -S mix run --config ~/config_watcher.exs
 ```
 
@@ -247,7 +251,7 @@ See [application architecture](docs/architecture.md) for more details.
 
 ## Child chain server
 
-`:omg_api` is the Elixir app which runs the child chain server, whose API can be exposed by running `:omg_jsonrpc`.
+`:omg_api` is the Elixir app which runs the child chain server, whose API is exposed by `:omg_jsonrpc`.
 
 For the responsibilities and design of the child chain server see [Tesuji Plasma Blockchain Design document](docs/tesuji_blockchain_design.md).
 
@@ -273,6 +277,8 @@ Request:
   "id":0
 }
 ```
+
+See the [step by step transaction generation specs here](docs/tesuji_tx_integration.md).
 
 Response:
 

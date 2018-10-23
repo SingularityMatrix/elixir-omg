@@ -17,22 +17,28 @@ defmodule OMG.Watcher.Integration.TestHelper do
   Common helper functions that are useful when integration-testing the watcher
   """
 
+  alias OMG.API.Crypto
+  alias OMG.API.State
+  alias OMG.API.Utxo
   alias OMG.Eth
+
+  require Utxo
   import OMG.Watcher.TestHelper
 
-  def compose_utxo_exit(blknum, txindex, oindex) do
-    decoded_resp = rest_call(:get, "account/utxo/compose_exit?blknum=#{blknum}&txindex=#{txindex}&oindex=#{oindex}")
+  def get_exit_data(blknum, txindex, oindex) do
+    utxo_pos = Utxo.Position.encode({:utxo_position, blknum, txindex, oindex})
 
-    {:ok, txbytes} = Base.decode16(decoded_resp["txbytes"], case: :mixed)
-    {:ok, proof} = Base.decode16(decoded_resp["proof"], case: :mixed)
-    {:ok, sigs} = Base.decode16(decoded_resp["sigs"], case: :mixed)
+    %{"result" => "success", "data" => data} = rest_call(:get, "utxo/#{utxo_pos}/exit_data")
 
-    %{
-      utxo_pos: decoded_resp["utxo_pos"],
-      txbytes: txbytes,
-      proof: proof,
-      sigs: sigs
-    }
+    OMG.Watcher.Web.Serializer.Response.decode16(data, ["txbytes", "proof", "sigs"])
+  end
+
+  def get_utxos(%{addr: address}) do
+    {:ok, address_encode} = Crypto.encode_address(address)
+
+    %{"result" => "success", "data" => utxos} = rest_call(:get, "utxos?address=#{address_encode}")
+
+    utxos
   end
 
   def wait_until_block_getter_fetches_block(block_nr, timeout) do
@@ -42,15 +48,15 @@ defmodule OMG.Watcher.Integration.TestHelper do
     |> Task.async()
     |> Task.await(timeout)
 
-    # TODO write to db seems to be async and wait_until_block_getter_fetches_block
-    # returns too early
-
+    # write to db seems to be async and wait_until_block_getter_fetches_block would return too early, so sleep
+    # leverage `block` events if they get implemented
     Process.sleep(100)
   end
 
   defp wait_for_block(block_nr) do
+    # TODO query to State used in tests instead of an event system, remove when event system is here
     fn ->
-      case GenServer.call(OMG.Watcher.BlockGetter, :get_height) < block_nr do
+      case State.get_current_child_block_height() <= block_nr do
         true -> :repeat
         false -> {:ok, block_nr}
       end

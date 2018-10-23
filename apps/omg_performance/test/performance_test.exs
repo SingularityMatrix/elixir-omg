@@ -15,14 +15,13 @@
 defmodule OMG.PerformanceTest do
   use ExUnitFixtures
   use ExUnit.Case, async: false
-  use OMG.Eth.Fixtures
-  use OMG.Eth.Fixtures
-  use OMG.Watcher.Fixtures
-  use OMG.API.Fixtures
+  use OMG.API.Integration.Fixtures
 
   import ExUnit.CaptureIO
 
   use OMG.API.LoggerExt
+
+  alias OMG.Eth
 
   @moduletag :integration
 
@@ -44,7 +43,7 @@ defmodule OMG.PerformanceTest do
     smoke_test_statistics(Path.join(destdir, perf_result), ntxs * nsenders)
   end
 
-  @tag fixtures: [:destdir, :contract, :geth, :child_chain, :root_chain_contract_config, :alice, :bob]
+  @tag fixtures: [:destdir, :contract, :omg_child_chain, :alice, :bob]
   test "Smoke test - run start_extended_perf and see if it don't crash", %{
     destdir: destdir,
     contract: contract,
@@ -53,6 +52,7 @@ defmodule OMG.PerformanceTest do
   } do
     ntxs = 3000
     senders = [alice, bob]
+    Enum.each(senders, &Eth.DevHelpers.import_unlock_fund/1)
 
     assert :ok = OMG.Performance.start_extended_perftest(ntxs, senders, contract.contract_addr, %{destdir: destdir})
 
@@ -69,9 +69,6 @@ defmodule OMG.PerformanceTest do
       capture_io(fn ->
         assert :ok = OMG.Performance.start_simple_perftest(ntxs, nsenders, %{destdir: destdir, profile: true})
       end)
-
-    # TODO a warning is printed out in fprof_io - check it out and possibly test against that
-    if fprof_io =~ "Warning", do: _ = Logger.warn(fn -> "fprof prints warnings during test" end)
 
     assert fprof_io =~ "Done!"
 
